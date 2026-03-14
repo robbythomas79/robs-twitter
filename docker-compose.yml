@@ -1,0 +1,73 @@
+version: '3.8'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rob's Twitter – full-stack docker-compose
+#
+# This file spins up the complete stack including the Kafka broker and the
+# Twitter producer from silviolleite/kafka-producer-twitter-streaming.
+#
+# Required environment variables (set in .env or your shell):
+#   TWITTER_API_KEY, TWITTER_API_SECRET,
+#   TWITTER_ACCESS_TOKEN_KEY, TWITTER_ACCESS_TOKEN_SECRET
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Kafka (all-in-one: broker + zookeeper + UI) ──
+  kafka:
+    image: landoop/fast-data-dev:latest
+    hostname: kafka
+    ports:
+      - "9092:9092"   # Kafka broker
+      - "2181:2181"   # Zookeeper
+      - "3030:3030"   # Landoop web UI
+      - "8081:8081"   # Schema Registry
+      - "8082:8082"   # Kafka REST Proxy
+      - "8083:8083"   # Kafka Connect
+    environment:
+      ADV_HOST: "127.0.0.1"
+      RUNTESTS: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── Twitter Kafka producer ──
+  # Clones silviolleite/kafka-producer-twitter-streaming and runs it.
+  # If you prefer to run the producer separately, comment this service out
+  # and point KAFKA_BROKER at your running broker.
+  twitter-producer:
+    image: python:3.9-slim
+    working_dir: /app
+    command: >
+      bash -c "
+        pip install --quiet confluent-kafka==1.4.2 tweepy==3.8.0 python-decouple==3.3 &&
+        git clone --depth 1 https://github.com/silviolleite/kafka-producer-twitter-streaming . &&
+        python twitter-producer.py
+      "
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      BROKER_URL: "kafka:9092"
+      TOPIC: "twitterTopic"
+      TWITTER_API_KEY:            "${TWITTER_API_KEY}"
+      TWITTER_API_SECRET:         "${TWITTER_API_SECRET}"
+      TWITTER_ACCESS_TOKEN_KEY:   "${TWITTER_ACCESS_TOKEN_KEY}"
+      TWITTER_ACCESS_TOKEN_SECRET: "${TWITTER_ACCESS_TOKEN_SECRET}"
+    restart: on-failure
+
+  # ── Rob's Twitter frontend ──
+  frontend:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      PORT:          "3000"
+      KAFKA_BROKER:  "kafka:9092"
+      KAFKA_TOPIC:   "twitterTopic"
+    restart: unless-stopped
