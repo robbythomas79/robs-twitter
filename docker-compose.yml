@@ -44,6 +44,8 @@ services:
     working_dir: /app
     command: >
       bash -c "
+        apt-get update -qq &&
+        apt-get install -y -q gcc git librdkafka-dev &&
         pip install --quiet confluent-kafka==1.4.2 tweepy==3.8.0 python-decouple==3.3 &&
         git clone --depth 1 https://github.com/silviolleite/kafka-producer-twitter-streaming . &&
         python twitter-producer.py
