@@ -162,6 +162,9 @@ class App {
     this.ws              = null;
     this.reconnectDelay  = 1000;
 
+    // Config panel state
+    this.streamConfig = { followAccounts: [], trackKeywords: [], languages: [] };
+
     // DOM refs
     this.feedEl        = document.getElementById('feed');
     this.emptyState    = document.getElementById('emptyState');
@@ -176,6 +179,22 @@ class App {
     this.newBanner     = document.getElementById('newTweetsBanner');
     this.themeBtn      = document.getElementById('themeBtn');
     this.themeIcon     = document.getElementById('themeIcon');
+
+    // Config panel refs
+    this.configBtn      = document.getElementById('configBtn');
+    this.configOverlay  = document.getElementById('configOverlay');
+    this.configCloseBtn = document.getElementById('configCloseBtn');
+    this.accountTags    = document.getElementById('accountTags');
+    this.keywordTags    = document.getElementById('keywordTags');
+    this.langTags       = document.getElementById('langTags');
+    this.accountInput   = document.getElementById('accountInput');
+    this.keywordInput   = document.getElementById('keywordInput');
+    this.langInput      = document.getElementById('langInput');
+    this.addAccountBtn  = document.getElementById('addAccountBtn');
+    this.addKeywordBtn  = document.getElementById('addKeywordBtn');
+    this.addLangBtn     = document.getElementById('addLangBtn');
+    this.saveConfigBtn  = document.getElementById('saveConfigBtn');
+    this.configNote     = document.getElementById('configNote');
 
     this.bindEvents();
     this.connect();
@@ -194,6 +213,28 @@ class App {
     });
 
     this.themeBtn.addEventListener('click', () => this.toggleTheme());
+
+    // ── Config panel ──
+    this.configBtn.addEventListener('click', () => this.openConfig());
+    this.configCloseBtn.addEventListener('click', () => this.closeConfig());
+    this.configOverlay.addEventListener('click', (e) => {
+      if (e.target === this.configOverlay) this.closeConfig();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !this.configOverlay.hidden) this.closeConfig();
+    });
+
+    // Add buttons
+    this.addAccountBtn.addEventListener('click', () => this.addTag('followAccounts', this.accountInput));
+    this.addKeywordBtn.addEventListener('click', () => this.addTag('trackKeywords',  this.keywordInput));
+    this.addLangBtn.addEventListener('click',    () => this.addTag('languages',      this.langInput));
+
+    // Enter key in inputs
+    this.accountInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.addTag('followAccounts', this.accountInput); });
+    this.keywordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.addTag('trackKeywords',  this.keywordInput); });
+    this.langInput.addEventListener('keydown',    (e) => { if (e.key === 'Enter') this.addTag('languages',      this.langInput); });
+
+    this.saveConfigBtn.addEventListener('click', () => this.saveConfig());
 
     this.newBanner.addEventListener('click', () => {
       this.pendingWhileScrolled = 0;
@@ -228,6 +269,7 @@ class App {
         const msg = JSON.parse(data);
         if (msg.type === 'tweet')   this.onTweet(msg.tweet);
         if (msg.type === 'history') msg.tweets.forEach(t => this.ingestTweet(t, false));
+        if (msg.type === 'config')  this.applyConfig(msg.config);
       } catch { /* ignore malformed */ }
     });
 
@@ -386,6 +428,89 @@ class App {
     const isDark = html.getAttribute('data-theme') === 'dark';
     html.setAttribute('data-theme', isDark ? 'light' : 'dark');
     this.themeIcon.textContent = isDark ? '🌙' : '☀️';
+  }
+
+  // ── Config panel ──
+
+  openConfig() {
+    this.configOverlay.hidden = false;
+    this.renderTags();
+    this.accountInput.focus();
+  }
+
+  closeConfig() {
+    this.configOverlay.hidden = true;
+  }
+
+  /** Called whenever the backend sends a config message (on connect or after save). */
+  applyConfig(config) {
+    this.streamConfig = {
+      followAccounts: config.followAccounts || [],
+      trackKeywords:  config.trackKeywords  || [],
+      languages:      config.languages      || [],
+    };
+    this.renderTags();
+  }
+
+  renderTags() {
+    this.renderTagList(this.accountTags, 'followAccounts', '@');
+    this.renderTagList(this.keywordTags, 'trackKeywords',  '');
+    this.renderTagList(this.langTags,    'languages',      '');
+  }
+
+  renderTagList(container, key, prefix) {
+    container.innerHTML = '';
+    (this.streamConfig[key] || []).forEach((value) => {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.innerHTML = `${escapeHTML(prefix + value)}<button class="tag-remove" aria-label="Remove ${escapeHTML(value)}">×</button>`;
+      tag.querySelector('.tag-remove').addEventListener('click', () => {
+        this.streamConfig[key] = this.streamConfig[key].filter(v => v !== value);
+        this.renderTags();
+      });
+      container.appendChild(tag);
+    });
+  }
+
+  addTag(key, input) {
+    const raw = input.value.trim().replace(/^[@#]/, '');
+    if (!raw) return;
+    if (!this.streamConfig[key].includes(raw)) {
+      this.streamConfig[key] = [...this.streamConfig[key], raw];
+      this.renderTags();
+    }
+    input.value = '';
+    input.focus();
+  }
+
+  async saveConfig() {
+    this.saveConfigBtn.disabled = true;
+    this.saveConfigBtn.textContent = 'Saving…';
+    this.configNote.textContent = '';
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this.streamConfig),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Save failed');
+
+      this.saveConfigBtn.classList.add('saved');
+      this.saveConfigBtn.textContent = 'Saved ✓';
+      this.configNote.textContent = 'Producer will reconnect within ~15 seconds.';
+
+      setTimeout(() => {
+        this.saveConfigBtn.classList.remove('saved');
+        this.saveConfigBtn.textContent = 'Save & Apply';
+        this.saveConfigBtn.disabled = false;
+      }, 3000);
+    } catch (err) {
+      this.configNote.textContent = `Error: ${err.message}`;
+      this.saveConfigBtn.textContent = 'Save & Apply';
+      this.saveConfigBtn.disabled = false;
+    }
   }
 }
 

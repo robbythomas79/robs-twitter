@@ -23,12 +23,92 @@
           <span class="status-dot" id="statusDot" aria-label="Connection status"></span>
           <span class="status-label" id="statusLabel">Connecting…</span>
         </div>
+        <button class="config-btn" id="configBtn" title="Stream settings" aria-label="Stream settings">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20" aria-hidden="true">
+            <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+        </button>
         <button class="theme-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">
           <span id="themeIcon">🌙</span>
         </button>
       </div>
     </div>
   </header>
+
+  <!-- ── Config panel (slide-over drawer) ── -->
+  <div class="config-overlay" id="configOverlay" hidden aria-modal="true" role="dialog" aria-label="Stream settings">
+    <div class="config-drawer">
+      <div class="config-drawer-header">
+        <h2>Stream Settings</h2>
+        <button class="config-close-btn" id="configCloseBtn" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="config-drawer-body">
+
+        <section class="config-section">
+          <h3 class="config-section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z"/>
+            </svg>
+            Followed Accounts
+          </h3>
+          <p class="config-hint">Live tweets from these accounts appear in the feed.</p>
+          <div class="tag-list" id="accountTags"></div>
+          <div class="tag-input-row">
+            <input type="text" id="accountInput" class="tag-input"
+                   placeholder="@username" autocomplete="off" spellcheck="false" />
+            <button class="tag-add-btn" id="addAccountBtn">Add</button>
+          </div>
+        </section>
+
+        <section class="config-section">
+          <h3 class="config-section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16" aria-hidden="true">
+              <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82zM7 7h.01"/>
+            </svg>
+            Track Keywords
+          </h3>
+          <p class="config-hint">Any tweet containing these words or #hashtags will appear.</p>
+          <div class="tag-list" id="keywordTags"></div>
+          <div class="tag-input-row">
+            <input type="text" id="keywordInput" class="tag-input"
+                   placeholder="keyword or #hashtag" autocomplete="off" spellcheck="false" />
+            <button class="tag-add-btn" id="addKeywordBtn">Add</button>
+          </div>
+        </section>
+
+        <section class="config-section">
+          <h3 class="config-section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
+            </svg>
+            Languages
+          </h3>
+          <p class="config-hint">BCP-47 codes e.g. <code>en</code>, <code>es</code>. Leave empty for all languages.</p>
+          <div class="tag-list" id="langTags"></div>
+          <div class="tag-input-row">
+            <input type="text" id="langInput" class="tag-input"
+                   placeholder="en" maxlength="8" autocomplete="off" />
+            <button class="tag-add-btn" id="addLangBtn">Add</button>
+          </div>
+        </section>
+
+      </div><!-- /.config-drawer-body -->
+
+      <div class="config-drawer-footer">
+        <p class="config-apply-note" id="configNote">
+          Changes apply within ~15 s (producer reconnects automatically).
+        </p>
+        <button class="save-config-btn" id="saveConfigBtn">Save &amp; Apply</button>
+      </div>
+
+    </div><!-- /.config-drawer -->
+  </div><!-- /.config-overlay -->
 
   <!-- ── Layout ── -->
   <div class="layout">

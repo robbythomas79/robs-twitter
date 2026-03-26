@@ -3,12 +3,12 @@ version: '3.8'
 # ──────────────────────────────────────────────────────────────────────────────
 # Rob's Twitter – full-stack docker-compose
 #
-# This file spins up the complete stack including the Kafka broker and the
-# Twitter producer from silviolleite/kafka-producer-twitter-streaming.
-#
-# Required environment variables (set in .env or your shell):
+# Required environment variables (copy .env.example → .env and fill in):
 #   TWITTER_API_KEY, TWITTER_API_SECRET,
 #   TWITTER_ACCESS_TOKEN_KEY, TWITTER_ACCESS_TOKEN_SECRET
+#   TWITTER_FOLLOW_ACCOUNTS   e.g. "NASA,BBCNews,elonmusk"
+#   TWITTER_TRACK_KEYWORDS    optional, e.g. "python,kafka"
+#   TWITTER_LANGUAGES         optional, e.g. "en"  (empty = all languages)
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -36,30 +36,36 @@ services:
       retries: 10
 
   # ── Twitter Kafka producer ──
-  # Clones silviolleite/kafka-producer-twitter-streaming and runs it.
-  # If you prefer to run the producer separately, comment this service out
-  # and point KAFKA_BROKER at your running broker.
+  # Uses our custom producer/producer.py (volume-mounted from this repo).
+  # Configure accounts/keywords via the web UI settings panel or .env.
   twitter-producer:
     image: python:3.9-slim
     working_dir: /app
+    volumes:
+      - ./producer:/app          # custom producer script
+      - stream-config:/config    # shared config written by the frontend UI
     command: >
       bash -c "
         apt-get update -qq &&
-        apt-get install -y -q gcc git librdkafka-dev &&
-        pip install --quiet confluent-kafka==1.4.2 tweepy==3.8.0 python-decouple==3.3 &&
-        git clone --depth 1 https://github.com/silviolleite/kafka-producer-twitter-streaming . &&
-        python twitter-producer.py
+        apt-get install -y -q gcc librdkafka-dev &&
+        pip install --quiet -r requirements.txt &&
+        python producer.py
       "
     depends_on:
       kafka:
         condition: service_healthy
     environment:
-      BROKER_URL: "kafka:9092"
-      TOPIC: "twitterTopic"
-      TWITTER_API_KEY:            "${TWITTER_API_KEY}"
-      TWITTER_API_SECRET:         "${TWITTER_API_SECRET}"
-      TWITTER_ACCESS_TOKEN_KEY:   "${TWITTER_ACCESS_TOKEN_KEY}"
+      BROKER_URL:   "kafka:9092"
+      TOPIC:        "twitterTopic"
+      CONFIG_PATH:  "/config/stream-config.json"
+      TWITTER_API_KEY:             "${TWITTER_API_KEY}"
+      TWITTER_API_SECRET:          "${TWITTER_API_SECRET}"
+      TWITTER_ACCESS_TOKEN_KEY:    "${TWITTER_ACCESS_TOKEN_KEY}"
       TWITTER_ACCESS_TOKEN_SECRET: "${TWITTER_ACCESS_TOKEN_SECRET}"
+      # Env-var fallbacks (used only if no config file exists yet)
+      TWITTER_FOLLOW_ACCOUNTS:     "${TWITTER_FOLLOW_ACCOUNTS:-}"
+      TWITTER_TRACK_KEYWORDS:      "${TWITTER_TRACK_KEYWORDS:-}"
+      TWITTER_LANGUAGES:           "${TWITTER_LANGUAGES:-}"
     restart: on-failure
 
   # ── Rob's Twitter frontend ──
@@ -70,8 +76,15 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    volumes:
+      - stream-config:/config    # shared config written by the settings panel
     environment:
       PORT:          "3000"
       KAFKA_BROKER:  "kafka:9092"
       KAFKA_TOPIC:   "twitterTopic"
+      CONFIG_PATH:   "/config/stream-config.json"
     restart: unless-stopped
+
+# Shared named volume for the stream config file
+volumes:
+  stream-config:
