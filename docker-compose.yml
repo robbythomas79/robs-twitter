@@ -58,10 +58,13 @@ services:
       BROKER_URL:   "kafka:9092"
       TOPIC:        "twitterTopic"
       CONFIG_PATH:  "/config/stream-config.json"
-      TWITTER_API_KEY:             "${TWITTER_API_KEY}"
-      TWITTER_API_SECRET:          "${TWITTER_API_SECRET}"
-      TWITTER_ACCESS_TOKEN_KEY:    "${TWITTER_ACCESS_TOKEN_KEY}"
-      TWITTER_ACCESS_TOKEN_SECRET: "${TWITTER_ACCESS_TOKEN_SECRET}"
+      # v2 Bearer Token — required
+      TWITTER_BEARER_TOKEN:        "${TWITTER_BEARER_TOKEN}"
+      # OAuth 1.0a — kept for potential future use
+      TWITTER_API_KEY:             "${TWITTER_API_KEY:-}"
+      TWITTER_API_SECRET:          "${TWITTER_API_SECRET:-}"
+      TWITTER_ACCESS_TOKEN_KEY:    "${TWITTER_ACCESS_TOKEN_KEY:-}"
+      TWITTER_ACCESS_TOKEN_SECRET: "${TWITTER_ACCESS_TOKEN_SECRET:-}"
       # Env-var fallbacks (used only if no config file exists yet)
       TWITTER_FOLLOW_ACCOUNTS:     "${TWITTER_FOLLOW_ACCOUNTS:-}"
       TWITTER_TRACK_KEYWORDS:      "${TWITTER_TRACK_KEYWORDS:-}"
