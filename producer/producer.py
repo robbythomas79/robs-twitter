@@ -2,90 +2,121 @@
 """
 Custom Twitter streaming producer for robs-twitter.
 
-Reads configuration entirely from environment variables so you never have
-to edit this file:
+Configuration priority (highest to lowest):
+  1. /config/stream-config.json  — written by the frontend UI
+  2. Environment variables        — set in .env / docker-compose
 
-  TWITTER_FOLLOW_ACCOUNTS  Comma-separated screen names to follow, e.g.
-                           "NASA,BBCNews,elonmusk"
+The producer watches the config file every CONFIG_POLL_INTERVAL seconds.
+When a change is detected it disconnects the current stream and reconnects
+with the updated settings — no container restart needed.
 
-  TWITTER_TRACK_KEYWORDS   Comma-separated keywords to track (optional).
-                           Combine with FOLLOW_ACCOUNTS or use alone.
-                           e.g. "python,kafka"
+Environment variables
+─────────────────────
+TWITTER_API_KEY / TWITTER_API_SECRET
+TWITTER_ACCESS_TOKEN_KEY / TWITTER_ACCESS_TOKEN_SECRET
 
-  TWITTER_LANGUAGES        Comma-separated BCP-47 language codes to filter
-                           (optional). Leave empty for all languages.
-                           e.g. "en" or "en,es"
+TWITTER_FOLLOW_ACCOUNTS   Comma-separated screen names  e.g. "NASA,BBCNews"
+TWITTER_TRACK_KEYWORDS    Comma-separated keywords       e.g. "python,kafka"
+TWITTER_LANGUAGES         Comma-separated BCP-47 codes  e.g. "en"  (empty = all)
 
-  BROKER_URL               Kafka broker, default "localhost:9092"
-  TOPIC                    Kafka topic, default "twitterTopic"
-
-  TWITTER_API_KEY / TWITTER_API_SECRET
-  TWITTER_ACCESS_TOKEN_KEY / TWITTER_ACCESS_TOKEN_SECRET
+BROKER_URL                Kafka broker  (default: localhost:9092)
+TOPIC                     Kafka topic   (default: twitterTopic)
+CONFIG_PATH               Path to shared config JSON  (default: /config/stream-config.json)
+CONFIG_POLL_INTERVAL      Seconds between config checks  (default: 15)
 """
 
+import json
 import os
 import sys
+import threading
 import time
 
 import tweepy
 from confluent_kafka import Producer
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Environment defaults ──────────────────────────────────────────────────────
 
-def _csv(env_key, default=''):
-    return [s.strip() for s in os.environ.get(env_key, default).split(',') if s.strip()]
+def _csv(key, default=''):
+    return [s.strip() for s in os.environ.get(key, default).split(',') if s.strip()]
 
 BROKER_URL  = os.environ.get('BROKER_URL', 'localhost:9092')
 TOPIC       = os.environ.get('TOPIC', 'twitterTopic')
 
-TWITTER_API_KEY              = os.environ.get('TWITTER_API_KEY', '')
-TWITTER_API_SECRET           = os.environ.get('TWITTER_API_SECRET', '')
-TWITTER_ACCESS_TOKEN_KEY     = os.environ.get('TWITTER_ACCESS_TOKEN_KEY', '')
-TWITTER_ACCESS_TOKEN_SECRET  = os.environ.get('TWITTER_ACCESS_TOKEN_SECRET', '')
+TWITTER_API_KEY             = os.environ.get('TWITTER_API_KEY', '')
+TWITTER_API_SECRET          = os.environ.get('TWITTER_API_SECRET', '')
+TWITTER_ACCESS_TOKEN_KEY    = os.environ.get('TWITTER_ACCESS_TOKEN_KEY', '')
+TWITTER_ACCESS_TOKEN_SECRET = os.environ.get('TWITTER_ACCESS_TOKEN_SECRET', '')
 
-FOLLOW_ACCOUNTS = _csv('TWITTER_FOLLOW_ACCOUNTS')   # screen names
-TRACK_KEYWORDS  = _csv('TWITTER_TRACK_KEYWORDS')     # keywords
-LANGUAGES       = _csv('TWITTER_LANGUAGES')          # BCP-47, empty = all
+CONFIG_PATH          = os.environ.get('CONFIG_PATH', '/config/stream-config.json')
+CONFIG_POLL_INTERVAL = int(os.environ.get('CONFIG_POLL_INTERVAL', '15'))
+
+# Env-var fallbacks (used if the config file doesn't exist yet)
+ENV_FOLLOW_ACCOUNTS = _csv('TWITTER_FOLLOW_ACCOUNTS')
+ENV_TRACK_KEYWORDS  = _csv('TWITTER_TRACK_KEYWORDS')
+ENV_LANGUAGES       = _csv('TWITTER_LANGUAGES')
+
+
+# ── Config file helpers ───────────────────────────────────────────────────────
+
+def load_config():
+    """Return (follow_accounts, track_keywords, languages) from file or env."""
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            data = json.load(f)
+        return (
+            [s.strip() for s in data.get('followAccounts', []) if s.strip()],
+            [s.strip() for s in data.get('trackKeywords',  []) if s.strip()],
+            [s.strip() for s in data.get('languages',      []) if s.strip()],
+        )
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ENV_FOLLOW_ACCOUNTS, ENV_TRACK_KEYWORDS, ENV_LANGUAGES
+
+
+def config_mtime():
+    try:
+        return os.path.getmtime(CONFIG_PATH)
+    except FileNotFoundError:
+        return 0.0
 
 
 # ── Kafka producer ────────────────────────────────────────────────────────────
 
 class KafkaProducer:
     def __init__(self):
-        self._producer = Producer({'bootstrap.servers': BROKER_URL})
-        print(f'[kafka]   Connected to broker {BROKER_URL!r}')
+        self._p = Producer({'bootstrap.servers': BROKER_URL})
+        print(f'[kafka]   Connected to {BROKER_URL!r}')
 
     def send(self, data: str) -> None:
-        self._producer.poll(0)
-        self._producer.produce(TOPIC, data.encode('utf-8'), callback=self._report)
+        self._p.poll(0)
+        self._p.produce(TOPIC, data.encode('utf-8'), callback=self._report)
 
     @staticmethod
     def _report(err, msg) -> None:
         if err:
             print(f'[kafka]   Delivery failed: {err}')
-        # Uncomment for verbose delivery confirmations:
-        # else:
-        #     print(f'[kafka]   Delivered → {msg.topic()} [{msg.partition()}]')
 
 
 # ── Tweepy stream listener ────────────────────────────────────────────────────
 
 class StreamListener(tweepy.StreamListener):
-    def __init__(self, kafka: KafkaProducer):
+    def __init__(self, kafka: KafkaProducer, stop_event: threading.Event):
         super().__init__()
         self._kafka = kafka
+        self._stop  = stop_event
         self._count = 0
 
     def on_connect(self):
         print('[twitter] Stream connected — waiting for tweets…')
 
     def on_data(self, data: str) -> bool:
+        if self._stop.is_set():
+            return False  # disconnect
         try:
             self._kafka.send(data)
             self._count += 1
             if self._count % 10 == 0:
-                print(f'[twitter] {self._count} tweets sent to Kafka so far')
+                print(f'[twitter] {self._count} tweets forwarded to Kafka')
         except Exception as exc:
             print(f'[producer] Send error: {exc}')
         return True
@@ -93,70 +124,100 @@ class StreamListener(tweepy.StreamListener):
     def on_error(self, status_code: int) -> bool:
         print(f'[twitter] Stream error: HTTP {status_code}')
         if status_code == 420:
-            # Rate-limited: back off and let Tweepy reconnect
             print('[twitter] Rate limited — backing off 60 s')
             time.sleep(60)
-            return False   # disconnect; Tweepy will retry
+            return False
         return True
 
     def on_timeout(self) -> bool:
-        print('[twitter] Timeout — keeping stream alive')
         return True
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Account resolution ────────────────────────────────────────────────────────
+
+def resolve_ids(api, screen_names):
+    """Resolve a list of screen names to numeric Twitter user ID strings."""
+    ids = []
+    for name in screen_names:
+        try:
+            user = api.get_user(screen_name=name)
+            ids.append(str(user.id))
+            print(f'[twitter] Following @{name} (id={user.id}, followers={user.followers_count:,})')
+        except tweepy.TweepError as exc:
+            print(f'[twitter] WARNING: Could not resolve @{name}: {exc}')
+    return ids
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
     # Validate credentials
-    missing = [
-        k for k in ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
-                    'TWITTER_ACCESS_TOKEN_KEY', 'TWITTER_ACCESS_TOKEN_SECRET')
-        if not os.environ.get(k)
-    ]
+    missing = [k for k in (
+        'TWITTER_API_KEY', 'TWITTER_API_SECRET',
+        'TWITTER_ACCESS_TOKEN_KEY', 'TWITTER_ACCESS_TOKEN_SECRET',
+    ) if not os.environ.get(k)]
     if missing:
         print(f'[producer] ERROR: Missing env vars: {", ".join(missing)}')
-        print('           Add them to your .env file and restart.')
         sys.exit(1)
 
-    if not FOLLOW_ACCOUNTS and not TRACK_KEYWORDS:
-        print('[producer] ERROR: Set at least one of TWITTER_FOLLOW_ACCOUNTS or TWITTER_TRACK_KEYWORDS')
-        sys.exit(1)
-
-    # Build Tweepy auth
+    # Build auth once — reused across stream reconnects
     auth = tweepy.OAuthHandler(TWITTER_API_KEY, TWITTER_API_SECRET)
     auth.set_access_token(TWITTER_ACCESS_TOKEN_KEY, TWITTER_ACCESS_TOKEN_SECRET)
-    api = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
+    api  = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
+    kafka = KafkaProducer()
 
-    # Resolve screen names → numeric user IDs (required by the Streaming API)
-    follow_ids = []
-    for name in FOLLOW_ACCOUNTS:
+    while True:
+        follow_accounts, track_keywords, languages = load_config()
+        current_mtime = config_mtime()
+
+        if not follow_accounts and not track_keywords:
+            print('[producer] No accounts or keywords configured — waiting 15 s…')
+            print('           Set TWITTER_FOLLOW_ACCOUNTS / TWITTER_TRACK_KEYWORDS in .env')
+            print('           or use the settings panel in the web UI.')
+            time.sleep(15)
+            continue
+
+        follow_ids = resolve_ids(api, follow_accounts)
+
+        if track_keywords:
+            print(f'[twitter] Tracking keywords: {track_keywords}')
+        if languages:
+            print(f'[twitter] Language filter: {languages}')
+        else:
+            print('[twitter] No language filter — all languages')
+
+        # stop_event lets the watcher thread signal the listener to disconnect
+        stop_event = threading.Event()
+
+        def watch_for_config_change():
+            """Poll the config file; set stop_event when it changes."""
+            while not stop_event.is_set():
+                time.sleep(CONFIG_POLL_INTERVAL)
+                if config_mtime() != current_mtime:
+                    print('[config] Change detected — reconnecting stream…')
+                    stop_event.set()
+
+        watcher = threading.Thread(target=watch_for_config_change, daemon=True)
+        watcher.start()
+
+        listener = StreamListener(kafka, stop_event)
+        stream   = tweepy.Stream(auth=auth, listener=listener)
+
+        filter_kwargs = {}
+        if follow_ids:     filter_kwargs['follow']    = follow_ids
+        if track_keywords: filter_kwargs['track']     = track_keywords
+        if languages:      filter_kwargs['languages'] = languages
+
+        print(f'[twitter] Starting stream…')
         try:
-            user = api.get_user(screen_name=name)
-            follow_ids.append(str(user.id))
-            print(f'[twitter] Will follow @{name} (id={user.id}, followers={user.followers_count:,})')
-        except tweepy.TweepError as exc:
-            print(f'[twitter] WARNING: Could not resolve @{name}: {exc}')
+            stream.filter(**filter_kwargs, is_async=False)
+        except Exception as exc:
+            print(f'[twitter] Stream error: {exc}')
 
-    if TRACK_KEYWORDS:
-        print(f'[twitter] Will track keywords: {TRACK_KEYWORDS}')
-    if LANGUAGES:
-        print(f'[twitter] Language filter: {LANGUAGES}')
-    else:
-        print('[twitter] No language filter — receiving all languages')
-
-    # Start streaming
-    kafka    = KafkaProducer()
-    listener = StreamListener(kafka)
-    stream   = tweepy.Stream(auth=auth, listener=listener)
-
-    filter_kwargs = {}
-    if follow_ids:     filter_kwargs['follow']    = follow_ids
-    if TRACK_KEYWORDS: filter_kwargs['track']     = TRACK_KEYWORDS
-    if LANGUAGES:      filter_kwargs['languages'] = LANGUAGES
-
-    print(f'[twitter] Starting stream…')
-    # is_async=False keeps it blocking so Docker can manage restarts
-    stream.filter(**filter_kwargs, is_async=False)
+        # Ensure watcher exits cleanly before we loop
+        stop_event.set()
+        print('[twitter] Stream stopped — reloading config…')
+        time.sleep(2)
 
 
 if __name__ == '__main__':

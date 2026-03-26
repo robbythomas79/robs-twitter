@@ -37,12 +37,13 @@ services:
 
   # ── Twitter Kafka producer ──
   # Uses our custom producer/producer.py (volume-mounted from this repo).
-  # Configure which accounts/keywords to stream via .env — no code changes needed.
+  # Configure accounts/keywords via the web UI settings panel or .env.
   twitter-producer:
     image: python:3.9-slim
     working_dir: /app
     volumes:
-      - ./producer:/app          # mount our custom producer script
+      - ./producer:/app          # custom producer script
+      - stream-config:/config    # shared config written by the frontend UI
     command: >
       bash -c "
         apt-get update -qq &&
@@ -56,10 +57,12 @@ services:
     environment:
       BROKER_URL:   "kafka:9092"
       TOPIC:        "twitterTopic"
+      CONFIG_PATH:  "/config/stream-config.json"
       TWITTER_API_KEY:             "${TWITTER_API_KEY}"
       TWITTER_API_SECRET:          "${TWITTER_API_SECRET}"
       TWITTER_ACCESS_TOKEN_KEY:    "${TWITTER_ACCESS_TOKEN_KEY}"
       TWITTER_ACCESS_TOKEN_SECRET: "${TWITTER_ACCESS_TOKEN_SECRET}"
+      # Env-var fallbacks (used only if no config file exists yet)
       TWITTER_FOLLOW_ACCOUNTS:     "${TWITTER_FOLLOW_ACCOUNTS:-}"
       TWITTER_TRACK_KEYWORDS:      "${TWITTER_TRACK_KEYWORDS:-}"
       TWITTER_LANGUAGES:           "${TWITTER_LANGUAGES:-}"
@@ -73,8 +76,15 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    volumes:
+      - stream-config:/config    # shared config written by the settings panel
     environment:
       PORT:          "3000"
       KAFKA_BROKER:  "kafka:9092"
       KAFKA_TOPIC:   "twitterTopic"
+      CONFIG_PATH:   "/config/stream-config.json"
     restart: unless-stopped
+
+# Shared named volume for the stream config file
+volumes:
+  stream-config:
